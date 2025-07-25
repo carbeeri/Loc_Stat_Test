@@ -1,0 +1,157 @@
+r<-function(x){0.7*sin(2*pi*x)}
+
+library(stabledist)
+library(purrr)
+library(Rcpp)
+library(foreach)
+library(doParallel)
+library(KernVekoEP)
+
+delta1<-0.15
+delta2<-0.39
+delta3<-0.49
+alpha<-1.5
+gamma_roh<-0.5
+mu<-0
+beta<-0
+
+gamma<-(gamma_roh)^(1/alpha)
+
+T<-3000
+b<-0.25*T^(-delta3)
+
+L<-10*floor((2*floor(b*T)+1)^delta1)
+F_in<-floor((2*floor(b*T)+1)^delta2)
+F<-2*F_in+1
+
+BS_g<-floor(T/L)
+ges<-BS_g*L
+
+rvec<-r((1:T)/T)
+
+Anf<-L*ceiling((T*b+1)/L)+1
+End<-L*floor((T-T*b)/L)
+
+l<-End-Anf+1
+h<-2*floor(b*T)+1
+
+KK<-KernDuo(b,T,Anf,End,l,h)
+KKK<-KernTrio(b,T,Anf,End,l,h)
+KKKK<-KernQuartett(b,T,Anf,End,l,h)
+
+P<-25
+N_ges<-25
+N<-N_ges/P
+N_BS<-200
+Cov_Isum_P<-double(P)
+Cov_Isum<-0
+
+print("Starte Parallelisierung")
+
+my.cluster<-parallel::makeCluster(P, type = "FORK")
+doParallel::registerDoParallel(cl=my.cluster)
+
+Cov_Isum_P<-foreach(p = 1:P, .combine = 'c', .packages = c("Rcpp","stabledist","purrr","KernVekoEP"), .noexport = c("<KVekBS>", "<KVekBS2>", "<KVekBS3>", "KVekBS>", "KVekBS2>", "KVekBS3>", "<KVekBSM>", "<KVekBSM2a>", "<KVekBSM2b>", "<KVekBSM3>")) %dopar% {
+
+  Isum<-Isum1<-Isum2<-Isum3<-double(N)
+  
+  Isum_Estern<-Isum1_Estern<-Isum2_Estern<-Isum3_Estern<-double(N)
+  
+  qo_Isum<-double(N)
+  
+  for(m in 1:N)
+  {
+    Y<-Z<-double(T)
+    
+    epsY<-rstable(T,alpha,beta,gamma,mu)
+    epsZ<-rstable(T,alpha,beta,gamma,mu)
+    
+    Y[1]<-rvec[1]*rstable(1,alpha,beta,gamma,mu)+epsY[1]
+    Z[1]<-rvec[1]*rstable(1,alpha,beta,gamma,mu)+epsZ[1]
+    
+    for(i in 2:T)
+    {
+      Y[i]<-rvec[i]*Y[i-1]+epsY[i]
+      Z[i]<-rvec[i]*Z[i-1]+epsZ[i]
+    }
+    
+    Isum1[m]<-KVek(KK,Y,Z,Anf-1,End-1,h)
+    Isum2[m]<-KVek2(KKK,Y,Z,Anf-1,End-1,h)
+    Isum3[m]<-KVek3(KKKK,Y,Z,Anf-1,End-1,h)
+    
+    Isum[m]<-pi*(Isum1[m]/(b*T)-2*Isum2[m]/((b*T)^2)+Isum3[m]/((b*T)^3))
+    
+    gc()
+    
+    Isum1_Estern[m]<-KVekBS(KK,Y,Z,Anf-1,End-1,h,F_in)
+    Isum2_Estern[m]<-KVekBS2(KKK,Y,Z,Anf-1,End-1,h,F_in)
+    Isum3_Estern[m]<-KVekBS3(KKKK,Y,Z,Anf-1,End-1,h,F_in)
+    
+    Isum_Estern[m]<-pi*(Isum1_Estern[m]/(b*T*F^2)-2*Isum2_Estern[m]/((b*T)^2*F^3)+Isum3_Estern[m]/((b*T)^3*F^4))
+    
+    gc()
+    
+    Isum_stern<-Isum1_stern<-Isum2_stern<-Isum3_stern<-double(N_BS)
+    
+    Isum_sternMix<-Isum1_sternMix<-Isum2_sternMix<-Isum3_sternMix<-Isum4_sternMix<-double(N_BS)
+    
+    IsumBS<-double(N_BS)
+    
+    for(n in 1:N_BS)
+    {
+      Y_stern<-Z_stern<-double(ges)
+      
+      k_BS<-round(runif(BS_g,-F_in,F_in), 0)
+      
+      for(i in 1:BS_g)
+      {
+        if(((i-1)*L+k_BS[i])>=0 && (i*L+k_BS[i])<=ges) {
+          Y_stern[(1+(i-1)*L):(i*L)]<-Y[(1+(i-1)*L+k_BS[i]):(i*L+k_BS[i])]
+          Z_stern[(1+(i-1)*L):(i*L)]<-Z[(1+(i-1)*L+k_BS[i]):(i*L+k_BS[i])]
+        } else {
+          Y_stern[(1+(i-1)*L):(i*L)]<-Y[(1+(i-1)*L-k_BS[i]):(i*L-k_BS[i])]
+          Z_stern[(1+(i-1)*L):(i*L)]<-Z[(1+(i-1)*L-k_BS[i]):(i*L-k_BS[i])]
+        }
+      }
+      
+      gc()
+      
+      Isum1_stern[n]<-KVek(KK,Y_stern,Z_stern,Anf-1,End-1,h)
+      Isum2_stern[n]<-KVek2(KKK,Y_stern,Z_stern,Anf-1,End-1,h)
+      Isum3_stern[n]<-KVek3(KKKK,Y_stern,Z_stern,Anf-1,End-1,h)
+      
+      Isum_stern[n]<-pi*(Isum1_stern[n]/(b*T)-2*Isum2_stern[n]/((b*T)^2)+Isum3_stern[n]/((b*T)^3))
+      
+      gc()
+      
+      Isum1_sternMix[n]<-KVekBSM(KK,Y,Y_stern,Z,Z_stern,Anf-1,End-1,h,F_in)
+      Isum2_sternMix[n]<-KVekBSM2a(KKK,Y,Y_stern,Z,Z_stern,Anf-1,End-1,h,F_in)
+      Isum3_sternMix[n]<-KVekBSM2b(KKK,Y,Y_stern,Z,Z_stern,Anf-1,End-1,h,F_in)
+      Isum4_sternMix[n]<-KVekBSM3(KKKK,Y,Y_stern,Z,Z_stern,Anf-1,End-1,h,F_in)
+      
+      Isum_sternMix[n]<-pi*(Isum1_sternMix[n]/(T*b*F)-Isum2_sternMix[n]/((T*b*F)^2)-Isum3_sternMix[n]/((T*b)^2*F)+Isum4_sternMix[n]/((T*b)^3*F^2))
+      
+      IsumBS[n]<-Isum_stern[n]-2*Isum_sternMix[n]+Isum_Estern[m]
+    }
+    
+    gc()
+    
+    qo_Isum[m]<-quantile(IsumBS,0.95)
+    
+    if(Isum[m]<=qo_Isum[m])
+    {
+      Cov_Isum<-Cov_Isum+1
+    }
+  }
+  gc()
+
+Cov_Isum
+}
+
+parallel::stopCluster(cl = my.cluster)
+
+Cov_Isum_P
+
+CovProz_Isum<-sum(Cov_Isum_P)/(N_ges)
+
+CovProz_Isum
